@@ -16,12 +16,19 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_MASTER_H_
 #define TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_MASTER_H_
 
+#define _TF_USE_SHARED_SESSION
+
 #include <unordered_map>
+#include <vector>
 
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/distributed_runtime/call_options.h"
 #include "tensorflow/core/distributed_runtime/master_env.h"
 #include "tensorflow/core/distributed_runtime/master_session.h"
+#ifdef _TF_USE_SHARED_SESSION
+#include "tensorflow/core/distributed_runtime/shared_master_session.h"
+#include "tensorflow/core/protobuf/cluster.pb.h"
+#endif
 #include "tensorflow/core/distributed_runtime/recent_request_ids.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
@@ -84,7 +91,25 @@ class Master {
   Thread* gc_thread_;
 
   // Maps session handles to sessions.
+#ifdef _TF_USE_SHARED_SESSION
+  std::unordered_map<string, SharedMasterSession*> sessions_ GUARDED_BY(mu_);
+
+  // config that identify whether can share session
+  struct Config {
+    const ClusterDef cluster_def_;
+    bool accept_shared_;
+
+    Config(const ClusterDef& cluster_def, bool accept_shared)
+        : cluster_def_(cluster_def), accept_shared_(accept_shared) {}
+  };
+
+  // use ClusterDef to identify which two Sessions can be shared
+  // std::unordered_map<string, const ClusterDef> sessions_configs_
+  // GUARDED_BY(mu_); std::vector<Config> session_configs_ GUARDED_BY(mu_);
+  std::unordered_map<string, Config> session_configs_ GUARDED_BY(mu_);
+#else
   std::unordered_map<string, MasterSession*> sessions_ GUARDED_BY(mu_);
+#endif
 
   // Moving average of step times.
   MovingAverage last_1000_steps_ GUARDED_BY(mu_);
@@ -99,6 +124,11 @@ class Master {
   // Used to track ids for incoming requests so we can detect duplicates.
   RecentRequestIds recent_request_ids_;
 
+#ifdef _TF_USE_SHARED_SESSION
+  SharedMasterSession* MayGetSharedMasterSession(
+      const CreateSessionRequest* req) GUARDED_BY(mu_);
+#endif
+
   // Call CleanupAll on all workers.
   void CleanupWorkers(const ResetRequest& reset);
 
@@ -107,7 +137,11 @@ class Master {
 
   // Find master session by session handle, and increments the reference count
   // on the returned MasterSession if not null.
+#ifdef _TF_USE_SHARED_SESSION
+  SharedMasterSession* FindMasterSession(const string& handle);
+#else
   MasterSession* FindMasterSession(const string& handle);
+#endif
 
   TF_DISALLOW_COPY_AND_ASSIGN(Master);
 };

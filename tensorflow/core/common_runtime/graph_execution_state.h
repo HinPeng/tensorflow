@@ -47,6 +47,9 @@ struct GraphExecutionStateOptions {
   // A map from node name to device name, representing the unchangeable
   // placement of stateful nodes.
   std::unordered_map<string, string> stateful_placements;
+
+  // container name for the node in this graph
+  string container_name;
 };
 
 // A ClientGraph is simply a sub-graph of the full graph as induced by

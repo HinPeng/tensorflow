@@ -29,6 +29,16 @@ limitations under the License.
 
 namespace tensorflow {
 
+namespace {
+
+inline void UpdateAllocatorStats(AllocatorStats* stats, void* ptr, size_t num_bytes) {
+  uint64 uptr = reinterpret_cast<uint64>(ptr);
+  stats->min_addr = std::min(stats->min_addr, uptr);
+  stats->max_addr = std::max(stats->max_addr, uptr+static_cast<uint64>(num_bytes));
+}
+
+}  // namespace
+
 BFCAllocator::BFCAllocator(SubAllocator* sub_allocator, size_t total_memory,
                            bool allow_growth, const string& name,
                            bool garbage_collection)
@@ -149,8 +159,6 @@ bool BFCAllocator::Extend(size_t alignment, size_t rounded_bytes) {
 
   VLOG(1) << "Allocated memory at " << mem_addr << " to "
           << static_cast<void*>(static_cast<char*>(mem_addr) + bytes);
-  LOG(INFO) << "Allocated memory at " << mem_addr << " to "
-            << static_cast<void*>(static_cast<char*>(mem_addr) + bytes);
   region_manager_.AddAllocationRegion(mem_addr, bytes);
 
   // Create one large chunk for the whole memory space that will
@@ -378,6 +386,7 @@ void* BFCAllocator::AllocateRawInternal(size_t unused_alignment,
   }
   void* ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes, freed_before);
   if (ptr != nullptr) {
+    UpdateAllocatorStats(&stats_, ptr, num_bytes);
     return ptr;
   }
 
@@ -385,6 +394,7 @@ void* BFCAllocator::AllocateRawInternal(size_t unused_alignment,
   if (Extend(unused_alignment, rounded_bytes)) {
     ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes, freed_before);
     if (ptr != nullptr) {
+      UpdateAllocatorStats(&stats_, ptr, num_bytes);
       return ptr;
     }
   }
@@ -397,6 +407,7 @@ void* BFCAllocator::AllocateRawInternal(size_t unused_alignment,
     if (MergeTimestampedChunks(rounded_bytes)) {
       ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes, freed_before);
       if (ptr != nullptr) {
+        UpdateAllocatorStats(&stats_, ptr, num_bytes);
         return ptr;
       }
     }
@@ -410,6 +421,7 @@ void* BFCAllocator::AllocateRawInternal(size_t unused_alignment,
       Extend(unused_alignment, rounded_bytes)) {
     ptr = FindChunkPtr(bin_num, rounded_bytes, num_bytes, freed_before);
     if (ptr != nullptr) {
+      UpdateAllocatorStats(&stats_, ptr, num_bytes);
       return ptr;
     }
   }

@@ -191,6 +191,9 @@ message GPUOptions {
   // to API stability guarantees in
   // https://www.tensorflow.org/guide/version_compat.
   Experimental experimental = 9;
+
+  // Allow GPU to be shared by other task
+  bool allow_shared = 10;
 }
 
 // Options passed to the graph optimizer

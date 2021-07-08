@@ -4081,6 +4081,9 @@ tf_cc_test(
         ":framework_internal",
         ":lib",
         ":lib_internal",
+        ":ops",
+        ":protos_all_cc",
+        ":protos_test_cc",
         ":test",
         ":test_main",
         ":testlib"

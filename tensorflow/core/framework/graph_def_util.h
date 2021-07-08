@@ -116,6 +116,9 @@ Status StrippedOpListForGraph(const GraphDef& graph_def,
                               const OpRegistryInterface& op_registry,
                               OpList* stripped_op_list);
 
+void AddOrUpdateContainerAttr(GraphDef* graph_def,
+                              const OpRegistryInterface& op_registry,
+                              const string& name);
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_FRAMEWORK_GRAPH_DEF_UTIL_H_

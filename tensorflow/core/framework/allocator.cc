@@ -33,9 +33,11 @@ string AllocatorStats::DebugString() const {
       "InUse:        %20lld\n"
       "MaxInUse:     %20lld\n"
       "NumAllocs:    %20lld\n"
-      "MaxAllocSize: %20lld\n",
+      "MaxAllocSize: %20lld\n"
+      "Allocation range: [0x%llx, 0x%llx], diff: %llu\n",
       this->bytes_limit ? *this->bytes_limit : 0, this->bytes_in_use,
-      this->peak_bytes_in_use, this->num_allocs, this->largest_alloc_size);
+      this->peak_bytes_in_use, this->num_allocs, this->largest_alloc_size,
+      this->min_addr, this->max_addr, this->max_addr - this->min_addr);
 }
 
 constexpr size_t Allocator::kAllocatorAlignment;

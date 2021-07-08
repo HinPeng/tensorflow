@@ -226,4 +226,23 @@ Status StrippedOpListForGraph(const GraphDef& graph_def,
   return Status::OK();
 }
 
+void AddOrUpdateContainerAttr(GraphDef* graph_def,
+                              const OpRegistryInterface& op_registry,
+                              const string& name) {
+  for (int i = 0; i < graph_def->node_size(); ++i) {
+    NodeDef* node_def = graph_def->mutable_node(i);
+    const OpDef* op_def;
+    Status s = op_registry.LookUpOpDef(node_def->op(), &op_def);
+    if (s.ok()) {
+      for (const auto& attr_def : op_def->attr()) {
+        if (attr_def.name() == "container") {
+          // TODO(px): see if node_def has container attr?
+          node_def->mutable_attr()->erase(string("container"));
+          AddNodeAttr(attr_def.name(), name, node_def);
+        }
+      }
+    }
+  }
+}
+
 }  // namespace tensorflow

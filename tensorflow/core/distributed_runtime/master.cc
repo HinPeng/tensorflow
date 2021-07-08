@@ -36,9 +36,12 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/device_set.h"
 #include "tensorflow/core/common_runtime/process_util.h"
+#include "tensorflow/core/common_runtime/gpu/gpu_id.h"
+#include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
 #include "tensorflow/core/distributed_runtime/remote_device.h"
 #include "tensorflow/core/distributed_runtime/worker_cache.h"
 #include "tensorflow/core/distributed_runtime/worker_interface.h"
+#include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/graph_def_util.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/notification.h"
@@ -50,15 +53,20 @@ limitations under the License.
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/protobuf/cluster.pb.h"
+#include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/protobuf/master.pb.h"
 #include "tensorflow/core/protobuf/worker.pb.h"
 #include "tensorflow/core/public/session_options.h"
 #include "tensorflow/core/util/device_name_utils.h"
+#include "tensorflow/core/util/env_var.h"
+
+#define _TF_USE_SHARED_SESSION
 
 namespace tensorflow {
 
 namespace {
 const char* const kGrpcProtocol = "grpc://";
+static bool _log_allocator_stats;
 }  // namespace
 
 Master::Master(MasterEnv* env, double session_gc_seconds)
@@ -70,6 +78,7 @@ Master::Master(MasterEnv* env, double session_gc_seconds)
   // Right now, a master service must be co-located with a device.
   // Otherwise, fetches do not work.
   CHECK(!env->local_devices.empty());
+  ReadBoolFromEnvVar("_TF_LOG_ALLOCATOR_STATS", false, &_log_allocator_stats);
 
   if (session_gc_seconds_ > 0.0) {
     gc_thread_ = env_->env->StartThread(ThreadOptions(), "TF_master_GC",
@@ -118,6 +127,87 @@ void Master::GC() {
   }
 }
 
+#ifdef _TF_USE_SHARED_SESSION
+SharedMasterSession* Master::FindMasterSession(const string& handle) {
+  SharedMasterSession* session = nullptr;
+  {
+    mutex_lock l(mu_);
+    session = gtl::FindPtrOrNull(sessions_, handle);
+    if (session != nullptr) {
+      session->Ref();
+    }
+  }
+  return session;
+}
+
+SharedMasterSession* Master::MayGetSharedMasterSession(
+    const CreateSessionRequest* req) {
+  if (session_configs_.empty()) return nullptr;
+
+  bool find = true;
+  string find_session_handle = "";
+  SharedMasterSession* session = nullptr;
+  const ClusterDef& curr_cluster_def = req->config().cluster_def();
+  // TODO(px): same cluster_def can not identify share or not
+  // as same task can own different number of GPUs
+  for (const auto& entry : session_configs_) {
+    // for (const auto& config : session_configs_) {
+    const Config& config = entry.second;
+    if (!config.accept_shared_) continue;
+
+    const string& session_handle = entry.first;
+    const ClusterDef& cluster_def = config.cluster_def_;
+    if (sessions_.at(session_handle)->NumTasks() > 1) {
+      // TODO(px): Currently, we don't consider pack more than two jobs in one
+      // session
+      LOG(WARNING) << "Session (handle: "
+                   << sessions_.at(session_handle)->handle()
+                   << ") has more than one task: "
+                   << sessions_.at(session_handle)->NumTasks();
+      continue;
+    }
+    find = true;
+    if (curr_cluster_def.job_size() > 2) {
+      LOG(ERROR) << "Error cluster_def: "
+                 << curr_cluster_def.ShortDebugString();
+      break;
+    }
+    const JobDef* c_worker_job = nullptr;
+    for (auto&& job : curr_cluster_def.job()) {
+      if (job.name() == "ps") continue;
+      c_worker_job = &job;
+    }
+    // TODO(px): check c_worker_job is not null
+    for (auto&& job : cluster_def.job()) {
+      if (job.name() == "ps")
+        continue;  // the tasks in 'PS' job can be different
+      if (job.tasks_size() != c_worker_job->tasks_size()) {
+        find = false;
+        break;
+      }
+
+      for (auto&& task : job.tasks()) {
+        auto c_string = c_worker_job->tasks().at(task.first);
+        if (task.second != c_string) {
+          find = false;
+          break;
+        }
+      }
+    }
+    // find a session that can be shared
+    if (find) {
+      find_session_handle = session_handle;
+      break;
+    }
+  }
+
+  if (!find_session_handle.empty()) {
+    session = sessions_.at(find_session_handle);
+    session->Ref();
+  }
+  return session;
+}
+#else
 MasterSession* Master::FindMasterSession(const string& handle) {
   MasterSession* session = nullptr;
   {
@@ -129,6 +219,7 @@ MasterSession* Master::FindMasterSession(const string& handle) {
   }
   return session;
 }
+#endif
 
 class DeviceFinder {
  public:
@@ -352,6 +443,28 @@ class DeviceFinder {
   TF_DISALLOW_COPY_AND_ASSIGN(DeviceFinder);
 };
 
+namespace {
+// utility to extract session_handle from session_handle with task_id
+inline const ::tensorflow::string _session_handle(
+    const ::tensorflow::string& s) {
+  // TODO(px): currently, the task_id is < 10
+  return s.substr(0, s.length() - 2);
+}
+
+// utility to extract task_id from request
+template <class ClientRequest>
+inline const int32 GetTaskId(const ClientRequest* req) {
+  ::tensorflow::string session_handle = req->session_handle();
+  return static_cast<int32>(session_handle.back() - '0');
+}
+
+template <class ClientRequest>
+inline const int32 GetTaskId(const ClientRequest& req) {
+  return GetTaskId(&req);
+}
+
+}  // namespace
+
 void Master::CreateSession(const CreateSessionRequest* req,
                            CreateSessionResponse* resp, MyClosure done) {
   SchedClosure([this, req, resp, done]() {
@@ -459,6 +572,41 @@ void Master::CreateSession(const CreateSessionRequest* req,
       }
     }
 
+#ifdef _TF_USE_SHARED_SESSION
+    mutex_lock l(mu_);
+    SharedMasterSession* shared_session = nullptr;
+    // auto shared_session = MayGetSharedMasterSession(req);
+    if (req->config().has_gpu_options()) {
+      if (req->config().gpu_options().allow_shared()) {
+        shared_session = MayGetSharedMasterSession(req);
+      } else {
+        VLOG(1) << "Task do not allow sharing GPU!";
+      }
+    }
+
+    if (shared_session) {
+      SessionOptions options;
+      options.config = req->config();
+      int32 next_task_id = shared_session->NumTasks();
+
+      GraphDef* gdef =
+          const_cast<CreateSessionRequest*>(req)->mutable_graph_def();
+
+      status = shared_session->AddTask(next_task_id, options, std::move(*gdef),
+                                       worker_cache_factory_options);
+      if (!status.ok()) {
+        shared_session->Close(next_task_id).IgnoreError();
+        shared_session->Unref();
+        return;
+      }
+
+      string session_handle_w_tid =
+          strings::StrCat(shared_session->handle(), "_", next_task_id);
+      resp->set_session_handle(session_handle_w_tid);
+      return;
+    }
+#endif
+
     CHECK(device_set->client_device()) << "No client device found. Missing "
                                        << "CPU:0 device?";
 
@@ -469,33 +617,59 @@ void Master::CreateSession(const CreateSessionRequest* req,
     DeviceFinder::GetRemoteWorkers(req->config().device_filters(), env_,
                                    worker_cache, &filtered_worker_list);
 
+#ifdef _TF_USE_SHARED_SESSION
+    SharedMasterSession* session = env_->shared_master_session_factory(
+        options, env_, std::move(remote_devices), std::move(worker_cache_ptr),
+        std::move(device_set), std::move(filtered_worker_list));
+#else
     MasterSession* session = env_->master_session_factory(
         options, env_, std::move(remote_devices), std::move(worker_cache_ptr),
         std::move(device_set), std::move(filtered_worker_list));
+#endif
 
     GraphDef* gdef =
         const_cast<CreateSessionRequest*>(req)->mutable_graph_def();
-
     status = session->Create(std::move(*gdef), worker_cache_factory_options);
     if (!status.ok()) {
-      session->Close().IgnoreError();
+      session->Close(0).IgnoreError();
       session->Unref();
       return;
     }
-    resp->set_session_handle(session->handle());
+#ifdef _TF_USE_SHARED_SESSION
+    string session_handle = strings::StrCat(session->handle(), "_", 0);
+#else
+    string session_handle = session->handle();
+#endif
+    resp->set_session_handle(session_handle);
     // Insert into the session map, which takes ownership of the session.
     {
+#ifndef _TF_USE_SHARED_SESSION
       mutex_lock l(mu_);
+#endif
       CHECK(sessions_.insert({session->handle(), session}).second);
+#ifdef _TF_USE_SHARED_SESSION
+      CHECK(session_configs_
+                .insert({session->handle(),
+                         Config(req->config().cluster_def(),
+                                req->config().has_gpu_options()
+                                    ? req->config().gpu_options().allow_shared()
+                                    : false)})
+                .second);
+#endif
     }
   });
 }
 
 void Master::ExtendSession(const ExtendSessionRequest* req,
                            ExtendSessionResponse* resp, MyClosure done) {
-  auto session = FindMasterSession(req->session_handle());
+#ifdef _TF_USE_SHARED_SESSION
+  string session_handle = _session_handle(req->session_handle());
+#else
+  string session_handle = req->session_handle();
+#endif
+  auto session = FindMasterSession(session_handle);
   if (session == nullptr) {
-    done(errors::Aborted("Session ", req->session_handle(), " is not found."));
+    done(errors::Aborted("Session ", session_handle, " is not found."));
     return;
   }
 
@@ -517,9 +691,14 @@ void Master::PartialRunSetup(const PartialRunSetupRequest* req,
     done(s);
     return;
   }
-  auto session = FindMasterSession(req->session_handle());
+#ifdef _TF_USE_SHARED_SESSION
+  string session_handle = _session_handle(req->session_handle());
+#else
+  string session_handle = req->session_handle();
+#endif
+  auto session = FindMasterSession(session_handle);
   if (session == nullptr) {
-    done(errors::Aborted("Session ", req->session_handle(), " is not found."));
+    done(errors::Aborted("Session ", session_handle, " is not found."));
     return;
   }
 
@@ -539,17 +718,29 @@ void Master::RunStep(CallOptions* opts, const RunStepRequestWrapper* req,
     return;
   }
   auto start_time = env_->env->NowMicros();
-  auto session = FindMasterSession(req->session_handle());
+#ifdef _TF_USE_SHARED_SESSION
+  string session_handle = _session_handle(req->session_handle());
+#else
+  string session_handle = req->session_handle();
+#endif
+  auto session = FindMasterSession(session_handle);
   if (session == nullptr) {
     done(errors::Aborted("Session ", req->session_handle(), " is not found."));
     return;
   }
 
-  SchedClosure([this, start_time, session, opts, req, resp, done]() {
+  SchedClosure([this, start_time, session, opts, req, resp, _log_allocator_stats, done]() {
+    AllocatorStats stats;
     Status status = session->Run(opts, *req, resp);
     session->Unref();
     uint64 done_time = env_->env->NowMicros();
     done(status);
+    if (_log_allocator_stats) {
+      GPUOptions options;
+      Allocator* gpu_allocator = GPUProcessState::singleton()->GetGPUAllocator(options, TfGpuId(0), 0);
+      stats = gpu_allocator->GetStats().value();
+      LOG(INFO) << stats.DebugString();
+    }
     mutex_lock l(mu_);
     last_1000_steps_.AddValue((done_time - start_time) / 1e9);
     ++step_count_;
@@ -558,28 +749,41 @@ void Master::RunStep(CallOptions* opts, const RunStepRequestWrapper* req,
 
 void Master::CloseSession(const CloseSessionRequest* req,
                           CloseSessionResponse* resp, MyClosure done) {
+#ifdef _TF_USE_SHARED_SESSION
+  SharedMasterSession* session = nullptr;
+  const int32 task_id = GetTaskId(req);
+#else
   MasterSession* session = nullptr;
+#endif
   {
     mu_.lock();
-    auto iter = sessions_.find(req->session_handle());
+#ifdef _TF_USE_SHARED_SESSION
+    string session_handle = _session_handle(req->session_handle());
+#else
+    string session_handle = req->session_handle();
+#endif
+    auto iter = sessions_.find(session_handle);
     if (iter == sessions_.end()) {
       mu_.unlock();
       done(errors::Aborted(
-          "Session ", req->session_handle(),
+          "Session ", session_handle,
           " is not found. Possibly, this master has restarted."));
       return;
     }
     // NOTE(mrry): One reference to the session is transferred from
     // `sessions_[req->session_handle()]` to `session`.
     session = iter->second;
-    sessions_.erase(iter);
+    if (session->NumTasks() == 1) {
+      sessions_.erase(iter);
+      session_configs_.erase(session_configs_.find(session_handle));
+    }
     mu_.unlock();
   }
 
   // Session Close() blocks on thread shutdown. Therefore, we need to
   // delete it in non-critical thread.
-  SchedClosure([session, done]() {
-    Status s = session->Close();
+  SchedClosure([session, task_id, done]() {
+    Status s = session->Close(task_id);
     session->Unref();
     done(s);
   });
@@ -589,10 +793,15 @@ void Master::ListDevices(const ListDevicesRequest* req,
                          ListDevicesResponse* resp, MyClosure done) {
   SchedClosure([this, req, resp, done]() {
     if (!req->session_handle().empty()) {
-      auto session = FindMasterSession(req->session_handle());
+#ifdef _TF_USE_SHARED_SESSION
+      string session_handle = _session_handle(req->session_handle());
+#else
+      string session_handle = req->session_handle();
+#endif
+      auto session = FindMasterSession(session_handle);
       if (session == nullptr) {
         done(errors::InvalidArgument(
-            "Session ", req->session_handle(),
+            "Session ", session_handle,
             " is not found. Possibly, this master has restarted."));
         return;
       }
@@ -652,7 +861,11 @@ void Master::Reset(const ResetRequest* req, ResetResponse* resp,
                    MyClosure done) {
   // Vector to hold the session pointers present in the sessions_
   // (string->Session*) map.
+#ifdef _TF_USE_SHARED_SESSION
+  std::vector<SharedMasterSession*> sessions_to_close;
+#else
   std::vector<MasterSession*> sessions_to_close;
+#endif
   {
     mutex_lock l(mu_);
     // NOTE(mrry): Transfer one reference to each session from the
@@ -667,9 +880,11 @@ void Master::Reset(const ResetRequest* req, ResetResponse* resp,
 
   SchedClosure([sessions_to_close, done]() {
     Status s;
-    for (MasterSession* session : sessions_to_close) {
-      s.Update(session->Close());
-      session->Unref();
+    for (auto* session : sessions_to_close) {
+      for (int i = 0; i < session->NumTasks(); ++i) {
+        s.Update(session->Close(i));
+        session->Unref();
+      }
     }
     done(s);
   });

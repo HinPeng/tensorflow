@@ -70,8 +70,9 @@ TEST(BFCAllocatorTest, TraceSim) {
   LOG(INFO) << "Read Trace file success, total allocations: " << allocs.size() / 2;
 
   absl::optional<AllocatorStats> stats;
-  uint64 max_addr = 0x000000000000;
+  uint64 max_addr = 0x000000000000;   // should not care the max base_addr, but the max(base_addr+alloc_bytes)
   uint64 min_addr = 0xffffffffffff;
+  int64 alloc_bytes_max_addr;
   // void* max_addr, min_addr;
   for (auto it: allocs) {
     if (it.second > 0) {
@@ -83,7 +84,10 @@ TEST(BFCAllocatorTest, TraceSim) {
       ptrs[it.first] = raw;
       uint64 raw_ = reinterpret_cast<uint64>(raw);
       if (raw_ < min_addr) min_addr = raw_;
-      if (raw_ > max_addr) max_addr = raw_;
+      if ((raw_+static_cast<uint64>(it.second)) > max_addr) {
+        max_addr = raw_+static_cast<uint64>(it.second);
+        alloc_bytes_max_addr = it.second;
+      }
       // LOG(INFO) << it.first << " : "  << raw;
     } else {
       if (ptrs.find(it.first) == ptrs.end()) {
@@ -95,7 +99,9 @@ TEST(BFCAllocatorTest, TraceSim) {
   }
 
   // LOG(INFO) << "Min addr: " << min_addr << ", Max addr: " << max_addr << ", diff: " << max_addr - min_addr;
-  printf("Min addr: 0x%llx, Max addr: 0x%llx, diff: %llu\n", min_addr, max_addr, max_addr-min_addr);
+  // printf("Min addr: 0x%llx, Max addr: 0x%llx, diff: %llu\n", min_addr, max_addr, max_addr-min_addr);
+  printf("Allocation range: [0x%llx, 0x%llx], diff: %llu, Max addr allocation bytes: %llu\n", min_addr, max_addr, max_addr-min_addr, alloc_bytes_max_addr);
+  // printf("Min addr: 0x%llx\nMax addr: 0x%llx\nAllocation bytes at max addr: %llu\nMaxInUse: %llu\n", min_addr, max_addr, alloc_bytes_max_addr, max_addr-min_addr);
   stats = allocator.GetStats();
   LOG(INFO) << stats->DebugString();
 }

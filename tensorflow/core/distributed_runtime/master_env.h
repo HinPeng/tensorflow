@@ -31,6 +31,7 @@ class Device;
 class DeviceSet;
 class Env;
 class MasterSession;
+class SharedMasterSession;
 class OpRegistryInterface;
 
 // Options passed to the worker_cache_factory function.
@@ -87,6 +88,14 @@ struct MasterEnv {
       std::unique_ptr<DeviceSet> device_set,
       std::vector<string> filtered_worker_list)>
       master_session_factory;
+  
+  std::function<SharedMasterSession*(
+      SessionOptions, MasterEnv*,
+      std::unique_ptr<std::vector<std::unique_ptr<Device>>>,
+      std::unique_ptr<WorkerCacheInterface>,
+      std::unique_ptr<DeviceSet> device_set,
+      std::vector<string> filtered_worker_list)>
+      shared_master_session_factory;
 
   std::function<Status(const WorkerCacheFactoryOptions&,
                        WorkerCacheInterface**)>

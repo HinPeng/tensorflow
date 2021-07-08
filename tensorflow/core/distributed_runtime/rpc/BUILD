@@ -303,9 +303,47 @@ cc_library(
         "//tensorflow/core/distributed_runtime:master",
         "//tensorflow/core/distributed_runtime:master_env",
         "//tensorflow/core/distributed_runtime:master_session",
+        "//tensorflow/core/distributed_runtime:shared_master_session",
         "//tensorflow/core/distributed_runtime:rpc_collective_executor_mgr",
         "//tensorflow/core/distributed_runtime:server_lib",
         "//tensorflow/core/distributed_runtime:session_mgr",
+        "//tensorflow/core/distributed_runtime:worker_cache_wrapper",
+        "//tensorflow/core/distributed_runtime:worker_env",
+        "//tensorflow/core/distributed_runtime/rpc/eager:grpc_eager_service_impl",
+    ],
+    alwayslink = 1,
+)
+
+cc_library(
+    name = "grpc_master_server_lib",
+    srcs = ["grpc_master_server_lib.cc"],
+    hdrs = ["grpc_master_server_lib.h"],
+    linkstatic = 1,  # Seems to be needed since alwayslink is broken in bazel
+    deps = [
+        ":async_service_interface",
+        ":grpc_channel",
+        ":grpc_master_service",
+        ":grpc_worker_cache",
+        ":grpc_worker_service",
+        ":rpc_rendezvous_mgr",
+        "//tensorflow:grpc",
+        "//tensorflow:grpc++",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:core_cpu_internal",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:framework_internal",
+        "//tensorflow/core:lib",
+        "//tensorflow/core/distributed_runtime:collective_param_resolver_distributed",
+        "//tensorflow/core/distributed_runtime:device_resolver_distributed",
+        "//tensorflow/core/distributed_runtime:graph_mgr",
+        "//tensorflow/core/distributed_runtime:local_master",
+        "//tensorflow/core/distributed_runtime:master",
+        "//tensorflow/core/distributed_runtime:master_env",
+        "//tensorflow/core/distributed_runtime:master_session",
+        "//tensorflow/core/distributed_runtime:rpc_collective_executor_mgr",
+        "//tensorflow/core/distributed_runtime:server_lib",
+        "//tensorflow/core/distributed_runtime:session_mgr",
+        "//tensorflow/core/distributed_runtime:shared_master_session",
         "//tensorflow/core/distributed_runtime:worker_cache_wrapper",
         "//tensorflow/core/distributed_runtime:worker_env",
         "//tensorflow/core/distributed_runtime/rpc/eager:grpc_eager_service_impl",
@@ -380,6 +418,43 @@ tf_cc_binary(
     name = "grpc_testlib_server",
     testonly = 1,
     deps = [":grpc_testlib_server_main"],
+)
+
+cc_library(
+    name = "grpc_testlib_master_server_main",
+    testonly = 1,
+    srcs = [
+        "grpc_testlib_master_server.cc",
+    ],
+    deps = [
+        ":grpc_server_lib",
+        ":grpc_master_server_lib",
+        "//tensorflow:grpc++",
+        "//tensorflow/core:array_ops_op_lib",
+        "//tensorflow/core:bitwise_ops_op_lib",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:framework_internal",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:nn_ops_op_lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:state_ops_op_lib",
+        "//tensorflow/core:testlib",
+        "//tensorflow/core/distributed_runtime:server_lib",
+        "//tensorflow/core/kernels:constant_op",
+        "//tensorflow/core/kernels:cwise_op",
+        "//tensorflow/core/kernels:dense_update_ops",
+        "//tensorflow/core/kernels:identity_op",
+        "//tensorflow/core/kernels:matmul_op",
+        "//tensorflow/core/kernels:reduction_ops",
+        "//tensorflow/core/kernels:variable_ops",
+    ],
+    alwayslink = 1,
+)
+
+tf_cc_binary(
+    name = "grpc_testlib_master_server",
+    testonly = 1,
+    deps = [":grpc_testlib_master_server_main"],
 )
 
 tf_cuda_library(

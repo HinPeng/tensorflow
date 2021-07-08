@@ -90,6 +90,10 @@ GraphExecutionState::~GraphExecutionState() {
 
   TF_RETURN_IF_ERROR(AddDefaultAttrsToGraphDef(&graph_def, *flib_def, 0));
 
+  if (!options.container_name.empty()) {
+    AddOrUpdateContainerAttr(&graph_def, *flib_def, options.container_name);
+  }
+
   if (options.session_options->config.graph_options().place_pruned_graph() ||
       !options.session_options->config.experimental()
            .optimize_for_static_graph()) {

@@ -71,6 +71,9 @@ struct AllocatorStats {
   int64 peak_bytes_in_use;   // The peak bytes in use.
   int64 largest_alloc_size;  // The largest single allocation seen.
 
+  uint64 min_addr;           // minimum addr of allocation
+  uint64 max_addr;           // maximum addr of allocation
+
   // The upper limit of bytes of user allocatable device memory, if such a limit
   // is known.
   absl::optional<int64> bytes_limit;
@@ -87,6 +90,8 @@ struct AllocatorStats {
         bytes_in_use(0),
         peak_bytes_in_use(0),
         largest_alloc_size(0),
+        min_addr(0xffffffffffff),
+        max_addr(0x000000000000),
         bytes_reserved(0),
         peak_bytes_reserved(0) {}
 

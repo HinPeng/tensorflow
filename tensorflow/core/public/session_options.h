@@ -57,6 +57,8 @@ struct SessionOptions {
   /// Configuration options.
   ConfigProto config;
 
+  bool accept_shared = false;
+
   SessionOptions();
 };
 

@@ -952,9 +952,7 @@ def set_tf_nccl_version(environ_cp):
   if not is_linux():
     raise ValueError('Currently NCCL is only supported on Linux platform.')
 
-  print('set tf nccl version')
   if 'TF_NCCL_VERSION' in environ_cp:
-    print('already have TF_NCCL_VERSION')
     return
 
   ask_nccl_version = (
